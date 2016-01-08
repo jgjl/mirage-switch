@@ -8,18 +8,18 @@ let packets_waiting = ref 0l
 
 let max_intfs = 3
 
-module Main (C: CONSOLE)(NET0: NETWORK) = struct
+type 'a interface = {
+  port_no : int;
+  name : string;
+  nic : Netif.t;
+  mac : Netif.macaddr;
+  in_queue : 'a Lwt_stream.t;
+  in_push : 'a option -> unit;
+  out_queue : 'a Lwt_stream.t;
+  out_push : 'a option -> unit;
+}
 
-  type 'a interface = {
-    port_no : int;
-    name : string;
-    nic : Netif.t;
-    mac : Netif.macaddr;
-    in_queue : 'a Lwt_stream.t;
-    in_push : 'a option -> unit;
-    out_queue : 'a Lwt_stream.t;
-    out_push : 'a option -> unit;
-  }
+module Main (C: CONSOLE)(NET0: NETWORK) = struct
 
   let make_intf_queues port_no name nic =
     let (in_queue, in_push) = Lwt_stream.create () in
@@ -89,13 +89,7 @@ module Main (C: CONSOLE)(NET0: NETWORK) = struct
     in
     detect_nics 1 >>
     let nics_list = Array.to_list nics in
-    choose [(Lwt_list.iter_p nic_listen nics_list);
-            (forward_thread nics_list)]
-    (*
-    choose [(nic_listen nics.(0));
-            (nic_listen nics.(1));
-            (nic_listen nics.(2));
-            (forward_thread nics_list)]
-    *)
+    choose [Lwt_list.iter_p nic_listen nics_list;
+            forward_thread nics_list]
     >> return (print_endline "terminated.")
 end
