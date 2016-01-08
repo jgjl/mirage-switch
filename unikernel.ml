@@ -46,16 +46,23 @@ module Main (C: CONSOLE)(NET0: NETWORK) = struct
     }
 
   let nic_listen intf =
-      let hw_addr =  Macaddr.to_string intf.mac in
-      let _ = printf "N1: listening on the interface with mac address '%s' \n%!" hw_addr in
-      Netif.listen intf.nic (fun frame -> return (intf.in_push (Some frame)))
+    let hw_addr =  Macaddr.to_string intf.mac in
+    let _ = printf "N1: listening on the interface with mac address '%s' \n%!" hw_addr in
+    Netif.listen intf.nic (fun frame -> return (intf.in_push (Some frame)))
 
   let update_packet_count () =
-      let _ = packets_in := Int32.succ !packets_in in
-      let _ = packets_waiting := Int32.succ !packets_waiting in
-      if (Int32.logand !packets_in 0xfl) = 0l then
-          let _ = printf "packets (in = %ld) (not forwarded = %ld)" !packets_in !packets_waiting in
-          print_endline ""
+    let _ = packets_in := Int32.succ !packets_in in
+    let _ = packets_waiting := Int32.succ !packets_waiting in
+    if (Int32.logand !packets_in 0xfl) = 0l then
+      let _ = printf "packets (in = %ld) (not forwarded = %ld)" !packets_in !packets_waiting in
+      print_endline ""
+
+  let flood_packet nics in_port frame =
+    let flood frame i nic =
+      if i != in_port then
+        nic.out_push frame
+    in
+    Array.iteri (flood frame) nics
 
   let start console nic0 =
     let nics = Array.make max_intfs (make_intf_queues nic0) in
@@ -72,13 +79,13 @@ module Main (C: CONSOLE)(NET0: NETWORK) = struct
         choose [
           while_lwt true do
               lwt _ = Lwt_stream.next intf0.in_queue >>= fun frame ->
-                  return (intf1.out_push (Some frame)) in
+                  return (flood_packet nics 0 (Some frame)) in
               return (update_packet_count ())
           done
           ;
           while_lwt true do
               lwt _ = Lwt_stream.next intf1.in_queue >>= fun frame ->
-                  return (intf0.out_push (Some frame)) in
+                  return (flood_packet nics 1 (Some frame)) in
               return (update_packet_count ())
           done
           ;
