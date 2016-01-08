@@ -1,6 +1,6 @@
 open Mirage
 
-let main = foreign "Unikernel.Main" (console @-> network @-> network @-> job)
+let main = foreign "Unikernel.Main" (console @-> network @->  job)
 
 let unix_libs =
   match get_mode () with
@@ -15,5 +15,5 @@ let () =
 
   register "network" [
     (*main $ default_console $ (netif "0") $ (netif "1")*)
-    main $ default_console $ (netif "tap0") $ (netif "tap1")
+    main $ default_console $ (netif "tap0")
   ]

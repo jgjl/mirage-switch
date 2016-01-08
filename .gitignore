@@ -2,3 +2,5 @@ _build
 log
 main.ml
 mir-network
+network.xe
+network.xl.in
