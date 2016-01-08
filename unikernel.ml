@@ -1,6 +1,7 @@
 open V1_LWT
 open Lwt
 open Printf
+open Mirage
 
 let packets_in = ref 0l
 let packets_waiting = ref 0l
@@ -19,6 +20,7 @@ let packets_waiting = ref 0l
          end,
  *)
 
+let max_intfs = 3
 
 module Main (C: CONSOLE)(NET0: NETWORK) = struct
 
@@ -30,8 +32,6 @@ module Main (C: CONSOLE)(NET0: NETWORK) = struct
     out_queue : 'a Lwt_stream.t;
     out_push : 'a option -> unit;
   }
-
-  let max_intfs = 3
 
   let make_intf_queues nic =
     let (in_queue, in_push) = Lwt_stream.create () in
@@ -45,10 +45,10 @@ module Main (C: CONSOLE)(NET0: NETWORK) = struct
         out_push = out_push;
     }
 
-  let nic_listen intf =
-    let hw_addr =  Macaddr.to_string intf.mac in
+  let nic_listen nic =
+    let hw_addr =  Macaddr.to_string nic.mac in
     let _ = printf "N1: listening on the interface with mac address '%s' \n%!" hw_addr in
-    Netif.listen intf.nic (fun frame -> return (intf.in_push (Some frame)))
+    Netif.listen nic.nic (fun frame -> return (nic.in_push (Some frame)))
 
   let update_packet_count () =
     let _ = packets_in := Int32.succ !packets_in in
@@ -75,36 +75,51 @@ module Main (C: CONSOLE)(NET0: NETWORK) = struct
         else
           return ()
       in
-      let forward_thread intf0 intf1 =
-        choose [
-          while_lwt true do
-              lwt _ = Lwt_stream.next intf0.in_queue >>= fun frame ->
-                  return (flood_packet nics 0 (Some frame)) in
-              return (update_packet_count ())
-          done
-          ;
-          while_lwt true do
-              lwt _ = Lwt_stream.next intf1.in_queue >>= fun frame ->
-                  return (flood_packet nics 1 (Some frame)) in
-              return (update_packet_count ())
-          done
-          ;
-          while_lwt true do
-              lwt frame = Lwt_stream.next intf0.out_queue in
-                  let _ = packets_waiting := Int32.pred !packets_waiting in
-                  Netif.write intf0.nic frame
-          done
-          ;
-          while_lwt true do
-              lwt frame = Lwt_stream.next intf1.out_queue in
-                  let _ = packets_waiting := Int32.pred !packets_waiting in
-                  Netif.write intf1.nic frame
-          done
-        ]
-      in
-      detect_nics 0 >>
-      choose [(nic_listen nics.(0));
-              (nic_listen nics.(1));
-              (forward_thread nics.(0) nics.(1))]
-      >> return (print_endline "terminated.")
+    let make_in_thread nic =
+      while_lwt true do
+        lwt _ = Lwt_stream.next nic.in_queue >>= fun frame ->
+          return (flood_packet nics 0 (Some frame)) in
+        return (update_packet_count ())
+      done in
+    let make_fwd_thread nic =
+      while_lwt true do
+        lwt frame = Lwt_stream.next nic.out_queue in
+        let _ = packets_waiting := Int32.pred !packets_waiting in
+        Netif.write nic.nic frame
+      done in
+    let forward_thread nics_list =
+      choose ( (List.map make_in_thread nics_list) @ (List.map make_fwd_thread nics_list) )
+    in
+    (*
+    let forward_thread intf0 intf1 =
+      choose [
+        while_lwt true do
+            lwt _ = Lwt_stream.next intf0.in_queue >>= fun frame ->
+                return (flood_packet nics 0 (Some frame)) in
+            return (update_packet_count ())
+        done
+        ;
+        while_lwt true do
+            lwt _ = Lwt_stream.next intf1.in_queue >>= fun frame ->
+                return (flood_packet nics 1 (Some frame)) in
+            return (update_packet_count ())
+        done
+        ;
+        while_lwt true do
+            lwt frame = Lwt_stream.next intf0.out_queue in
+                let _ = packets_waiting := Int32.pred !packets_waiting in
+                Netif.write intf0.nic frame
+        done
+        ;
+      ]
+    *)
+    let nics_list = Array.to_list nics in
+    detect_nics 0 >>
+    choose ( (List.map nic_listen nics_list) @ [(forward_thread nics_list)] )
+    (*
+    choose [(nic_listen nics.(0));
+            (nic_listen nics.(1));
+            (forward_thread nics)]
+    *)
+    >> return (print_endline "terminated.")
 end
