@@ -6,7 +6,7 @@ open Mirage
 let packets_in = ref 0l
 let packets_waiting = ref 0l
 
-let max_intfs = 3
+let max_intfs = 4
 
 type eth_frame = {
   in_port: int;
