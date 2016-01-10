@@ -25,8 +25,9 @@ type interface = {
   in_push : (Netif.buffer * eth_frame option) option -> unit;
   out_queue : Netif.buffer Lwt_stream.t;
   out_push : Netif.buffer option -> unit;
-  packets_in : int32 ref;
-  packets_out : int32 ref;
+  mutable packets_in : int32;
+  mutable packets_waiting : int32;
+  mutable packets_out : int32;
 }
 
 let parse_ethernet_frame frame in_port =
@@ -59,14 +60,36 @@ module Switch = struct
       all_intfs = intf_list;
     }
 
-  let decide state parsed_frame =
-    let _ = match Hashtbl.mem state.mac_intf parsed_frame.src with
-    | false -> Hashtbl.add state.mac_intf parsed_frame.src parsed_frame.in_port;
-               let new_set = MacSet.add parsed_frame.src state.intf_mac.(parsed_frame.in_port) in
-               state.intf_mac.(parsed_frame.in_port) <- new_set;
-    | true -> () in
-    try [ Hashtbl.find state.mac_intf parsed_frame.dst ]
-    with Not_found -> state.all_intfs
+  let decide state parsed_frame_opt =
+    match parsed_frame_opt with
+    | None -> 
+      let _ = printf "Frame not parsed, dropped\n" in 
+      []
+    | Some parsed_frame ->
+      let _ = match Hashtbl.mem state.mac_intf parsed_frame.src with
+      | false -> Hashtbl.add state.mac_intf parsed_frame.src parsed_frame.in_port;
+                 let new_set = MacSet.add parsed_frame.src state.intf_mac.(parsed_frame.in_port) in
+                 state.intf_mac.(parsed_frame.in_port) <- new_set;
+      | true -> () in
+      try 
+        let out_ports = [ Hashtbl.find state.mac_intf parsed_frame.dst ] in
+        let out_ports_string = (String.concat " " (List.map string_of_int out_ports)) in
+        let _ = printf "Frame %s -> %s out port %s\n" parsed_frame.src parsed_frame.dst out_ports_string in 
+        out_ports
+      with 
+        Not_found -> 
+          let _ = printf "Frame %s -> %s forward to all ports\n" parsed_frame.src parsed_frame.dst in
+          state.all_intfs
+
+  let print state =
+    let _ = printf "Interfaces: %s\n" (String.concat " " (List.map string_of_int state.all_intfs)) in
+    let _ = Array.iteri (fun k v -> printf "%s -> %s\n"
+                                    (string_of_int k)
+                                    (String.concat " " (MacSet.elements v))) 
+                        state.intf_mac in
+    let _ = print_endline "" in
+    let _ = Hashtbl.iter (fun k v -> printf "%s -> %d\n" k v) state.mac_intf in
+    print_endline ""
 end
 
 module Main (C: CONSOLE)(NET0: NETWORK) = struct
@@ -83,8 +106,9 @@ module Main (C: CONSOLE)(NET0: NETWORK) = struct
       in_push = in_push;
       out_queue = out_queue;
       out_push = out_push;
-      packets_in = ref 0l;
-      packets_out = ref 0l;
+      packets_in = 0l;
+      packets_waiting = 0l;
+      packets_out = 0l;
     }
 
   let nic_listen nic =
@@ -92,22 +116,18 @@ module Main (C: CONSOLE)(NET0: NETWORK) = struct
     let _ = printf "listening on the interface with mac address '%s' \n%!" hw_addr in
     Netif.listen nic.nic (fun frame -> return (nic.in_push (Some (frame, (parse_ethernet_frame frame nic.port_no)))))
 
-  let update_packet_count () =
-    let _ = packets_in := Int32.succ !packets_in in
-    packets_waiting := Int32.succ !packets_waiting
-    (*
-    let _ = packets_waiting := Int32.succ !packets_waiting in
-    if (Int32.logand !packets_in 0xfl) = 0l then
-      let _ = printf "packets (in = %ld) (not forwarded = %ld)" !packets_in !packets_waiting in
-      print_endline ""*)
+  let update_packet_count nic =
+    let _ = nic.packets_in <- Int32.succ nic.packets_in in
+    let _ = nic.packets_waiting <- Int32.succ nic.packets_waiting in
+    if (Int32.logand nic.packets_in 0xfl) = 0l then
+      let _ = printf "packets (in = %ld) (not forwarded = %ld)" nic.packets_in nic.packets_waiting in
+      print_endline ""
 
-  let forward_packet in_nic frame out_nic =
-    (*let _ = printf "in_port: %d, out_port: %d\n" in_nic.port_no out_nic.port_no in*)
-    if in_nic.port_no != out_nic.port_no then
-      (*let _ = printf "flooding to port %d\n" out_nic.port_no in*)
-      return (out_nic.out_push (Some frame))
+  let forward_packet nics in_nic frame out_port =
+    if in_nic.port_no != out_port then
+      let _ = (nics.(out_port).out_push (Some frame)) in
+      return (update_packet_count nics.(out_port))
     else
-      (*let _ = printf "not flooding to port %d\n" out_nic.port_no in*)
       return ()
 
   let start console nic0 =
@@ -124,16 +144,23 @@ module Main (C: CONSOLE)(NET0: NETWORK) = struct
       in
     let make_in_thread nics_list switch nic =
       while_lwt true do
-        lwt _ = Lwt_stream.next nic.in_queue >>= fun (frame, _) ->
+        lwt _ = Lwt_stream.next nic.in_queue >>= fun (frame, eth_frame) ->
           let out_ports = Switch.decide switch eth_frame in
-          Lwt_list.iter_p (forward_packet nic frame) out_ports in
-          return (update_packet_count ())
+          let out_ports_string = (String.concat " " (List.map string_of_int out_ports)) in
+          let _ = match eth_frame with 
+            | Some parsed_frame ->
+                printf "Frame %s -> %s out port %s\n" parsed_frame.src parsed_frame.dst out_ports_string 
+            | None -> printf "Could not parse frame"
+          in
+          let _ = Switch.print switch in
+          Lwt_list.iter_p (forward_packet nics nic frame) out_ports in
+          return ()
       done in
     let make_fwd_thread nic =
       while_lwt true do
         lwt frame = Lwt_stream.next nic.out_queue in
         let _ = packets_waiting := Int32.pred !packets_waiting in
-        (*let _ = printf "Sending packet out port: %d\n" nic.port_no in*)
+        let _ = printf "Sending packet out port: %d\n" nic.port_no in
         Netif.write nic.nic frame
       done in
     let forward_thread nics_list switch =
