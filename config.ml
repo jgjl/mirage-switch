@@ -10,10 +10,11 @@ let unix_libs =
 
 
 let () =
-  add_to_ocamlfind_libraries
-    ([ "tcpip.ethif"; "fieldslib"; "fieldslib.syntax"; "mirage" ] @ unix_libs);
+  let libs = [ "tcpip.ethif"; "fieldslib"; "fieldslib.syntax"; "mirage" ] @ unix_libs in
+  let packs = [ "tcpip"; "fieldslib" ] @ unix_libs in
+  add_to_ocamlfind_libraries (libs);
+  add_to_opam_packages (packs);
 
   register "network" [
-    (*main $ default_console $ (netif "0") $ (netif "1")*)
     main $ default_console $ (netif "tap0")
   ]
